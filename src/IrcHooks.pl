@@ -19,29 +19,31 @@ sub IrcActionHook {
 sub IrcMsgHook {
     my ($type, $channel, $who, $message) = @_;
 
+    return unless $type =~ /(^public|private$)/;
+
     if ($type =~ /public/i)	{
         &channel($channel);
         &process($who, $type, $message);
         &status("<$who/$channel> $origMessage");
+	return;
     }
 
-    if ($type =~ /private/i) {
-        if (($params{'mode'} eq 'IRC') && ($who eq $prevwho)) {
-            $delay = time() - $prevtime;
-            $prevcount++;
+    # Private
+    if (($params{'mode'} eq 'IRC') && ($who eq $prevwho)) {
+      $delay = time() - $prevtime;
+      $prevcount++;
 
-            return if (($message eq $prevmsg) && ($delay < 10));
-        } else {
-            $prevcount = 0;
-            $firsttime = time;
-        }
-
-        $prevtime = time unless ($message eq $prevmsg);
-        $prevmsg = $message;
-        $prevwho = $who;
-        &process($who, $type, $message);
-        &status("[$who] $origMessage");
+      return if (($message eq $prevmsg) && ($delay < 10));
+    } else {
+      $prevcount = 0;
+      $firsttime = time;
     }
+
+    $prevtime = time unless ($message eq $prevmsg);
+    $prevmsg = $message;
+    $prevwho = $who;
+    &process($who, $type, $message);
+    &status("[$who] $origMessage");
     return;
 }
 

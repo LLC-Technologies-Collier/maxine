@@ -244,6 +244,9 @@ This allows you to override the user's C<DBMModule> for this database.
 =cut
 
 sub openDBMx {
+
+=doc disabling DBM, since we're using mysql
+
     my ($dbname, @arg) = @_;
     my ($fatal, $file, $initfile, $tag, $locking, $module);
 
@@ -312,6 +315,8 @@ sub openDBMx {
     _open $rdb
     	or return $fail->($@);
 
+=cut
+
     return 1;
 }
 
@@ -328,6 +333,9 @@ sub _open {
     my $module	= $rdb->[F_MODULE];
 
     my $with_locking = $locking ? ' (with locking)' : '';
+
+=doc disable DBM, since we're using mysql
+
     if (tie %{ $rdb->[F_HASH] }, $module, $file, O_RDWR, 0) {
 	status "opened $dbname -> $file$with_locking";
     } elsif (tie %{ $rdb->[F_HASH] }, $module, $file, O_CREAT | O_RDWR, 0666) {
@@ -337,6 +345,7 @@ sub _open {
 	$@ = "failed to open $dbname -> $file";
 	return 0;
     }
+
 
     if ($locking) {
 	my $fh = $rdb->[F_LOCK_FH] = gensym;
@@ -354,12 +363,16 @@ sub _open {
     insertFile $dbname, $rdb->[F_INITFILE]
 	if $created;
 
+=cut
+
     return 1;
 }
 
 sub _close_open {
     my ($dbname) = @_;
     my ($fail_reason);
+
+=doc disable DBM since we're using mysql
 
     closeDBM '_no_delete', $dbname;
 
@@ -374,6 +387,9 @@ sub _close_open {
 	sleep 1;
     }
     status "Error re-opening $dbname ($@), giving up";
+
+=cut
+
     return 0;
 }
 
@@ -393,11 +409,17 @@ sub openDBM {
     my %arg = @_;
     my ($dbname, $file, $fail);
 
+    $fail = 0;
+
+=doc disabling DBM since we're using mysql
+
     while (($dbname, $file) = each %arg) {
 	next unless $dbname =~ /\S/;
 	openDBMx $dbname, file => $file
 	    or $fail = 1;
     }
+
+=cut
 
     return !$fail;
 }
@@ -409,12 +431,16 @@ Flush to disk any unwritten changes to the database.
 =cut
 
 sub syncDBM {
+
+=doc disabling DBM, since we're using MySQL
+
     my ($dbname) = @_;
     my $rdb = $DBMS{$dbname};
 
     print "sync $rdb->[F_DBNAME]\n" if $Debug;
     $rdb->[F_UPDATE_COUNT] = 0;
     &{ $rdb->[F_SYNC_SUB] ||= do {
+	eval {
 		if (tied(%{ $rdb->[F_HASH] })->can('sync')) {
 		    print "syncDBM: $dbname using ->sync\n" if $Debug;
 		    sub { tied(%{ $rdb->[F_HASH] })->sync }
@@ -423,11 +449,17 @@ sub syncDBM {
 		    print "syncDBM: $dbname using reopen\n" if $Debug;
 		    sub { _close_open $dbname }
 		}
-	    }
+	    }} || sub { _close_open $dbname }
 	}();
+
+=cut
+
 }
 
 sub lock {
+
+=doc disabling DBM since we're using MySQL
+
     my ($rdb, $bits) = @_;
 
     my $have = $rdb->[F_LOCK_STAT];
@@ -454,6 +486,9 @@ sub lock {
     flock $rdb->[F_LOCK_FH], $bits or die "Can't lock $rdb->[F_FILE]: $!\n"
 	if $rdb->[F_LOCKING];
     $rdb->[F_LOCK_STAT] = $want;
+
+=cut
+
 }
 
 =item insertFile $dbname, $filename
@@ -467,6 +502,9 @@ This loads the given file into the database.  Input lines look like
 =cut
 
 sub insertFile {
+
+=doc disabling DBM
+
     my ($dbname, $factfile) = @_;
     my $rdb = $DBMS{$dbname};
 
@@ -489,6 +527,9 @@ sub insertFile {
     } else {
 	status "FAILED to load $factfile into $dbname";
     }
+
+=cut
+
 }
 
 =item closeDBM $dbname
@@ -498,6 +539,9 @@ Close the database.
 =cut
 
 sub closeDBM {
+
+=doc disabling DBM
+
    if (@_) {
 	my ($dbname, $rdb, $no_delete);
 	$no_delete = shift if $_[0] eq '_no_delete';
@@ -511,6 +555,9 @@ sub closeDBM {
     } else {
 	status "No dbs specified; none closed";
     }
+
+=cut
+
 }
 
 =item closeDBMAll
@@ -520,7 +567,8 @@ Close all databases.
 =cut
 
 sub closeDBMAll {
-    closeDBM keys %DBMS;
+# disabling DBM
+#    closeDBM keys %DBMS;
 }
 
 =item set $dbname, $key, $val
@@ -528,6 +576,64 @@ sub closeDBMAll {
 Set a key/value pair in the database.
 
 =cut
+
+use DBI;
+
+my $dsn = "DBI:mysql:database=maxine;host=mariadb";
+my $dbh = DBI->connect($dsn,
+                       "maxine", "password",
+		       { RaiseError => 1 }
+                      );
+
+my %query =
+  ( insert   => ( "INSERT INTO infobot(dbname, dbKey, val) ".
+	  	"VALUES(?,?,?)"
+	        ),
+    update   => ( "UPDATE infobot SET val=? ".
+	 	 "WHERE dbname=? && dbKey=?"
+	        ),
+    delete   => ( "DELETE FROM infobot WHERE dbname=? && dbKey=?" ),
+    clearAll => ( "DELETE FROM infobot WHERE dbname=?" ),
+    get      => ( "SELECT val FROM infobot WHERE dbname=? && dbKey=?" ),
+    whatdbs  => ( "SELECT DISTINCT dbname FROM infobot" ),
+    showdb   => ( "SELECT dbKey, val FROM infobot WHERE dbname RLIKE ?" ),
+    getKeys  => ( "SELECT dbKey FROM infobot WHERE dbname=?" ),
+  );
+
+my %sth;
+while(my($name, $query) = each %query){
+  $sth{$name} = $dbh->prepare($query{$name});
+}
+
+sub update {
+  my ($dbname, $key, $val, $no_locking) = @_;
+  if(get($dbname, $key, $no_locking)){
+    if($sth{update}->execute($dbname, $key, $val)){
+      return $val;
+    }else{
+      return undef;
+    }
+  }else{
+    if(insert($dbname, $key, $val, $no_locking)){
+      return $val;
+    }else{
+      return undef;
+    }
+  }
+}
+
+sub insert {
+  my ($dbname, $key, $val, $no_locking) = @_;
+
+  if(get($dbname, $key, $no_locking)){
+    return update(@_);
+  }
+  if($sth{insert}->execute($dbname, $key, $val)){
+    return $val;
+  }else{
+    return undef;
+  }
+}
 
 sub set {
     my ($dbname, $key, $val, $no_locking) = @_;
@@ -538,21 +644,34 @@ sub set {
 
     # this is a hack to keep set param consistant.. overloaded
     if ($dbname eq 'param') {
-	my $was = $param{$key};
-	$param{$key} = $val;
-	return $was;
+      my $was = $param{$key};
+      $param{$key} = $val;
+      return $was;
     }
+
+    # Try to update the sql database
+    my $was = get($dbname, $key, $no_locking);
+    if($was){
+      return $was if(update(@_));
+    }
+
+    my $newVal = insert(@_);
+    return $newVal if(defined $newVal);
 
     if (!$key) {
 	return 'NULLKEY';
     }
 
+=doc disabling DBM
+
     my $rdb = $DBMS{$dbname};
     my $rhash = $rdb->[F_HASH];
     lock $rdb, LOCK_EX unless $no_locking;
-    my $was = $rhash->{$key};
+    $was = $rhash->{$key};
     $rhash->{$key} = $val;
     lock $rdb, LOCK_UN unless $no_locking;
+
+=cut
 
     return $was;
 }
@@ -570,11 +689,24 @@ sub get {
 	($dbname, $key) = split(/\s+/, $dbname);
     }
 
+    if($sth{get}->execute($dbname, $key)){
+      my $row = $sth{get}->fetchrow_hashref();
+      return $row->{val};
+    }
+
+=doc disabling DBM
+
     my $rdb = $DBMS{$dbname};
     lock $rdb, LOCK_SH unless $no_locking;
     my $val = $rdb->[F_HASH]{$key};
     lock $rdb, LOCK_UN unless $no_locking;
+
+    $sth{insert}->execute($dbname, $key, $val);
+
     return $val;
+
+=cut
+
 }
 
 =item postInc $dbname, $key
@@ -586,10 +718,10 @@ Increment the value of $key in the database, return the old value.
 sub postInc {
     my ($dbname, $key) = @_;
 
-    my $rdb = $DBMS{$dbname};
-    lock $rdb, LOCK_EX;
-    set $dbname, $key, 1 + get($dbname, $key, 1), 1;
-    lock $rdb, LOCK_UN;
+#    my $rdb = $DBMS{$dbname};
+#    lock $rdb, LOCK_EX;
+    set( $dbname, $key, 1 + get($dbname, $key, 1), 1 );
+#    lock $rdb, LOCK_UN;
 }
 
 =item postDec $dbname, $key
@@ -601,23 +733,46 @@ Decrement the value of $key in the database, return the old value.
 sub postDec {
     my ($dbname, $key) = @_;
 
-    my $rdb = $DBMS{$dbname};
-    lock $rdb, LOCK_EX;
+#    my $rdb = $DBMS{$dbname};
+#    lock $rdb, LOCK_EX;
     set $dbname, $key, -1 + get($dbname, $key, 1), 1;
-    lock $rdb, LOCK_UN;
+#    lock $rdb, LOCK_UN;
 }
 
 sub whatdbs {
     my @result;
-    foreach (keys %DBMS) {
-	push @result, "$_ => $DBMS{$_}[F_FILE]";
+    my $row;
+
+    if($sth{whatdbs}->execute()){
+      while($row = $sth{whatdbs}->fetchrow_hashref()){
+	push(@result, "$row->{dbname} => hurg"); # FIXME if anyone uses this
+      }
     }
+
+#    foreach (keys %DBMS) {
+#	push @result, "$_ => $DBMS{$_}[F_FILE]";
+#    }
+    return @result;
+}
+
+sub listdbs {
+    my @result;
+    my $row;
+
+    if($sth{whatdbs}->execute()){
+      while($row = $sth{whatdbs}->fetchrow_hashref()){
+	push(@result, $row->{dbname});
+      }
+    }
+
     return @result;
 }
 
 sub showdb {
     my ($dbname, $regex) = @_;
     my @result;
+
+    print("Showing db, over.\n");
 
     if (!$regex) {
 	($dbname, $regex) = split(/\s+/, $dbname, 2);
@@ -628,12 +783,15 @@ sub showdb {
     if (!$dbname) {
 	status "no db given";
 	status "try showdb <db> <regex>";
-	# @whichdbs = (keys %DBMS);
+	@whichdbs = listdbs();
     } else {
-	@whichdbs = ($dbname);
+        @whichdbs = ($dbname);
     }
 
     foreach $dbname (@whichdbs) {
+
+=doc disabling DBM
+
 	my $rdb = $DBMS{$dbname};
 	if (!$rdb) {
 	    status "the database $dbname is not open.";
@@ -642,20 +800,35 @@ sub showdb {
 	}
 	lock $rdb, LOCK_SH;
 	my $rhash = $rdb->[F_HASH];
+
+=cut
+
 	my ($key, $val);
 	if (!$regex) {
 	     status "showing all of $dbname";
-	    while (($key, $val) = each %$rhash) {
-		push @result, "$key => $val";
-	    }
+
+# Hack to load BDB content into MySQL
+#	    while (($key, $val) = each %$rhash) {
+#		update($dbname, $key, $val);
+#	    }
+
+	     $sth{showdb}->execute(".");
+	     while(my $row = $sth{showdb}->fetchrow_hashref()){
+	       push @result, "$row->{dbKey} => $row->{val}";
+	     }
 	} else {
 	    status "searching $dbname for /$regex/";
-	    while (($key, $val) = each %$rhash) {
-		push @result, "$key => $val"
-		    if $key =~ /$regex/ || $val =~ /$regex/;
+# Hack to load BDB content into MySQL
+#	    while (my ($key, $val) = each %$rhash) {
+#		update($dbname, $key, $val);
+#	    }
+
+	    $sth{showdb}->execute($regex);
+	    while(my $row = $sth{showdb}->fetchrow_hashref()){
+	      push @result, "$row->{dbKey} => $row->{val}";
 	    }
 	}
-	lock $rdb, LOCK_UN;
+#	lock $rdb, LOCK_UN;
     }
 
     return @result;
@@ -671,7 +844,7 @@ sub topofthecharts(&$@) {  # &$@#!!!
     # and the rest of @_ is the values themselves
 
     if(scalar(@_)<=$numtoreturn) {
-        return sort { &$sortfun($a,$b) } (@_) 
+        return sort { &$sortfun($a,$b) } (@_)
     }
 
     my @b=sort { $sortfun->($a,$b) } @_[0..$numtoreturn-1];
@@ -692,6 +865,10 @@ sub topofthecharts(&$@) {  # &$@#!!!
 #
 # Currently used only by the topten.pm module.
 sub showtop {
+    return (); # disable function
+
+=doc disable DBM
+
     my ($dbname, $num_to_show, $what_to_show) = @_;
     my @result;
 
@@ -723,10 +900,15 @@ sub showtop {
         @result = topofthecharts { $rhash->{$_[1]} <=> $rhash->{$_[0]} }
             $num_to_show, keys %$rhash;
     }
+
     lock $rdb, LOCK_UN;
 
     my @results = map { $_." => ".$rhash->{$_} } @result;
+
     return @results;
+
+=cut
+
 }
 
 sub forget {
@@ -747,15 +929,16 @@ sub clear {
 	($dbname, $key) = split(/\s+/, $dbname);
     }
 
-    my $rdb = $DBMS{$dbname};
-    lock $rdb, LOCK_EX;
+#    my $rdb = $DBMS{$dbname};
+#    lock $rdb, LOCK_EX;
     my $was = get $dbname, $key, 1;
 
     print "DELETING $dbname $key\n";
-    delete $DBMS{$dbname}[F_HASH]{$key};
+#    delete $DBMS{$dbname}[F_HASH]{$key};
+    $sth{delete}->execute($dbname, $key);
     print "DELETED\n";
 
-    lock $rdb, LOCK_UN;
+#    lock $rdb, LOCK_UN;
     return $was;
 }
 
@@ -768,10 +951,18 @@ Empty the database.
 sub clearAll {
     my ($dbname) = @_;
 
+    return; 
+
+=doc eew.  I don't want anybody clearing the whole db...
+
     my $rdb = $DBMS{$dbname};
     lock $rdb, LOCK_EX;
     %{ $rdb->[F_HASH] } = ();
+    $sth{clearAll}->execute($dbname);
     lock $rdb, LOCK_UN;
+
+=cut
+
 }
 
 =item getDBMKeys $dbname
@@ -783,10 +974,16 @@ Return all the keys in the database.
 sub getDBMKeys {
     my ($dbname) = @_;
 
-    my $rdb = $DBMS{$dbname};
-    lock $rdb, LOCK_SH;
-    my @k = keys %{ $rdb->[F_HASH] };
-    lock $rdb, LOCK_UN;
+#    my $rdb = $DBMS{$dbname};
+#    lock $rdb, LOCK_SH;
+#    my @k = keys %{ $rdb->[F_HASH] };
+    my @k;
+    $sth{getKeys}->execute($dbname);
+
+    while(my $row = $sth{getKeys}->fetchrow_hashref()){
+      push(@k, $row->{dbKey});
+    }
+#    lock $rdb, LOCK_UN;
     return @k;
 }
 

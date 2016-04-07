@@ -1,0 +1,8 @@
+*.dir
+*.pag
+*.log
+
+conf/infobot.*channels
+conf/infobot.*config
+conf/infobot.*users
+conf/infobot.*help

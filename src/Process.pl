@@ -330,6 +330,13 @@ sub process {
         $tell_obj =~ s/[\.\?!]+$// if defined $tell_obj;
     }
 
+    # Channel invite request (cj)
+    $result = Flooter::Invite->process($who, $message)
+      if( getparam('allowInvites') &&
+          $type =~ /^private$/i    &&
+          $message =~ /invite/
+        );
+
     if (not defined $result) {
         $target   = $who     unless defined $target;
         $target   = $who     if     $target eq 'me';
